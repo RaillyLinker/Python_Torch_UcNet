@@ -24,23 +24,20 @@ class UpsampleConcatBackbone(nn.Module):
 
         # 각 블록 채널 수를 원하는 대로 조절 가능
         self.blocks = nn.ModuleList([
-            self._make_block(in_channels, 32, 32),  # 512 -> 256
+            self._make_block(in_channels, 64, 32),  # 512 -> 256
             self._make_block(32, 64, 32),  # 256 -> 128
-            self._make_block(32, 64, 64),  # 128 -> 64
+            self._make_block(32, 128, 64),  # 128 -> 64
             self._make_block(64, 128, 64),  # 64 -> 32
-            self._make_block(64, 128, 128),  # 32 -> 16
+            self._make_block(64, 256, 128),  # 32 -> 16
             self._make_block(128, 256, 128),  # 16 -> 8
-            self._make_block(128, 256, 256),  # 8 -> 4
+            self._make_block(128, 512, 256),  # 8 -> 4
             self._make_block(256, 512, 256),  # 4 -> 2
-            self._make_block(256, 512, 512),  # 2 -> 1
+            self._make_block(256, 1024, 512),  # 2 -> 1
         ])
 
         assert len(self.blocks) >= self.concat_stride, "concat_stride is too large for number of blocks"
 
-        selected_indices = list(range(len(self.blocks) - 1, -1, -concat_stride))
-        if 0 not in selected_indices:
-            selected_indices.append(0)
-        self.selected_indices = selected_indices
+        self.selected_indices = list(range(len(self.blocks) - 1, -1, -concat_stride))
 
         # concat 후 채널 수는 upsampled feature들의 채널 수 합입니다.
         concat_channels = sum(
@@ -65,15 +62,15 @@ class UpsampleConcatBackbone(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         feats = []
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
             x = block(x)
-            feats.append(x)
+            if i in self.selected_indices:
+                feats.append(x)
 
         target_h, target_w = feats[0].shape[2], feats[0].shape[3]
 
         upsampled = []
-        for i in self.selected_indices:
-            f = feats[i]
+        for f in feats:
             if f.shape[2:] != (target_h, target_w):
                 f = F.interpolate(f, size=(target_h, target_w), mode='nearest')
             upsampled.append(f)
