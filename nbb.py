@@ -16,79 +16,87 @@ class RMSNorm(nn.Module):
 
 
 class UpsampleConcatBackbone(nn.Module):
-    def __init__(self, in_channels: int = 3, concat_stride: int = 2):
+    def __init__(self):
         super().__init__()
-        self.concat_stride = concat_stride
 
-        assert self.concat_stride > 0, "concat_stride must be positive"
-
-        # 각 블록 채널 수를 원하는 대로 조절 가능
         self.blocks = nn.ModuleList([
-            self._make_block(in_channels, 64, 32),  # 512 -> 256
-            self._make_block(32, 64, 32),  # 256 -> 128
-            self._make_block(32, 128, 64),  # 128 -> 64
-            self._make_block(64, 128, 64),  # 64 -> 32
-            self._make_block(64, 256, 128),  # 32 -> 16
-            self._make_block(128, 256, 128),  # 16 -> 8
-            self._make_block(128, 512, 256),  # 8 -> 4
-            self._make_block(256, 512, 256),  # 4 -> 2
-            self._make_block(256, 1024, 512),  # 2 -> 1
+            self._make_single_conv_block(3, 24, 3, 2, 1),  # 320x320 -> 160x160
+            self._make_single_conv_block(24, 24, 3, 2, 1),  # 160x160 -> 80x80
+            self._make_single_conv_block(24, 48, 3, 2, 1),  # 80x80 -> 40x40
+            self._make_single_conv_block(48, 48, 3, 2, 1),  # 40x40 -> 20x20
+            self._make_single_conv_block(48, 96, 3, 2, 1),  # 20x20 -> 10x10
+            self._make_single_conv_block(96, 96, 3, 2, 1),  # 10x10 -> 5x5
+            self._make_single_conv_block(96, 192, 3, 2, 1),  # 5x5 -> 3x3
+            self._make_single_conv_block(192, 192, 3, 1, 0),  # 3x3 -> 1x1
         ])
 
-        assert len(self.blocks) >= self.concat_stride, "concat_stride is too large for number of blocks"
+        self.reduces = nn.ModuleList()
 
-        self.selected_indices = list(range(len(self.blocks) - 1, -1, -concat_stride))
+        # 초기 out_channels: 첫 block 출력 채널 수
+        prev_channels = self.blocks[0][0].out_channels
 
-        # concat 후 채널 수는 upsampled feature들의 채널 수 합입니다.
-        concat_channels = sum(
-            self.blocks[i][3].out_channels for i in self.selected_indices
-        )
-        # concat_channels를 반으로 줄이는 레이어
-        self.reduce = nn.Sequential(
-            nn.Conv2d(concat_channels, concat_channels // 2, kernel_size=1, bias=False),
-            RMSNorm(concat_channels // 2),
-            nn.GELU()
-        )
+        # reduce layer는 두 번째 block부터 필요하므로 blocks[1:] 기준으로 생성
+        for block in self.blocks[1:]:
+            block_out_ch = block[0].out_channels
+            concat_ch = prev_channels + block_out_ch
+            self.reduces.append(
+                nn.Sequential(
+                    nn.Conv2d(concat_ch, concat_ch // 2, kernel_size=1, bias=False),
+                    RMSNorm(concat_ch // 2),
+                    nn.SiLU()
+                )
+            )
+            prev_channels = concat_ch // 2
 
-    def _make_block(self, in_ch: int, mid_ch: int, out_ch: int) -> nn.Sequential:
+    def _make_single_conv_block(self, in_ch, out_ch, ks, strd, pdd):
         return nn.Sequential(
-            nn.Conv2d(in_ch, mid_ch, kernel_size=3, stride=2, padding=1, bias=False),
-            RMSNorm(mid_ch),
-            nn.GELU(),
-            nn.Conv2d(mid_ch, out_ch, kernel_size=1, bias=False),
-            RMSNorm(out_ch),
-            nn.GELU()
+            nn.Conv2d(in_ch, out_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.SiLU()
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        feats = []
+    def _make_depthwise_separable_conv_block(self, in_ch, out_ch, ks, strd, pdd):
+        return nn.Sequential(
+            # Depthwise convolution
+            nn.Conv2d(in_ch, in_ch, kernel_size=ks, stride=strd, padding=pdd, groups=in_ch, bias=False),
+            nn.BatchNorm2d(in_ch),
+            nn.SiLU(),
+            # Pointwise convolution
+            nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.SiLU()
+        )
+
+    def forward(self, x):
+        out = None
+        target_h, target_w = None, None
+
         for i, block in enumerate(self.blocks):
             x = block(x)
-            if i in self.selected_indices:
-                feats.append(x)
 
-        target_h, target_w = feats[0].shape[2], feats[0].shape[3]
-
-        upsampled = []
-        for f in feats:
-            if f.shape[2:] != (target_h, target_w):
-                f = F.interpolate(f, size=(target_h, target_w), mode='nearest')
-            upsampled.append(f)
-
-        out = torch.cat(upsampled, dim=1)
-        out = self.reduce(out)  # concat 후 채널 수 절반으로 축소
+            if out is None:
+                out = x
+                target_h, target_w = x.shape[2], x.shape[3]
+            else:
+                f = F.interpolate(x, size=(target_h, target_w), mode='nearest')
+                out = torch.cat([out, f], dim=1)
+                reduce_layer = self.reduces[i - 1]  # reduce_layer는 두 번째 block부터 있음
+                out = reduce_layer(out)
 
         return out
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 class UpsampleConcatClassifier(nn.Module):
-    def __init__(self, num_classes: int, in_channels: int = 3, concat_stride: int = 2):
+    def __init__(self, num_classes: int):
         super().__init__()
-        self.backbone = UpsampleConcatBackbone(in_channels=in_channels, concat_stride=concat_stride)
+        self.backbone = UpsampleConcatBackbone()
 
-        # 백본의 reduced 채널 수를 그대로 사용
-        self.output_channels = self.backbone.reduce[0].out_channels
+        # 임의의 입력으로 출력 채널 크기 추론 (예: 1x3x320x320)
+        with torch.no_grad():
+            dummy_input = torch.randn(2, 3, 320, 320)
+            dummy_out = self.backbone(dummy_input)
+        self.output_channels = dummy_out.shape[1]
 
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)),
@@ -100,3 +108,40 @@ class UpsampleConcatClassifier(nn.Module):
         x = self.backbone(x)
         x = self.classifier(x)
         return x
+
+# import timm  # EfficientNetV2-S 포함 다양한 pretrained 모델 제공
+#
+#
+# class ConvNeXtV2Backbone(nn.Module):
+#     def __init__(self, model_name: str = "convnextv2_tiny"):
+#         super().__init__()
+#         # pretrained ConvNeXtV2, classifier 제외
+#         self.model = timm.create_model(model_name, pretrained=False, features_only=True)
+#         # features_only=True: FC layer 제외하고 feature map만 반환
+#
+#     def forward(self, x):
+#         features = self.model(x)  # list of feature maps (보통 4~5개 계층 출력됨)
+#         return features[-1]  # 마지막 feature map 사용 (B, C, H, W)
+#
+#
+# class UpsampleConcatClassifier(nn.Module):
+#     def __init__(self, num_classes: int):
+#         super().__init__()
+#         self.backbone = ConvNeXtV2Backbone()
+#
+#         # output 채널 수 자동 추출
+#         with torch.no_grad():
+#             dummy_input = torch.randn(1, 3, 320, 320)
+#             dummy_out = self.backbone(dummy_input)
+#         self.output_channels = dummy_out.shape[1]
+#
+#         self.classifier = nn.Sequential(
+#             nn.AdaptiveAvgPool2d((1, 1)),
+#             nn.Flatten(),
+#             nn.Linear(self.output_channels, num_classes)
+#         )
+#
+#     def forward(self, x):
+#         x = self.backbone(x)
+#         x = self.classifier(x)
+#         return x
