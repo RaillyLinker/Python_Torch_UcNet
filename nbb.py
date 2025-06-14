@@ -22,8 +22,8 @@ class UpsampleConcatBackbone(nn.Module):
 
         # todo 레이어 깊고 채널 적게, 레이어 얕고 채널 많게
         self.feature_blocks = nn.ModuleList([
-            self._make_single_conv_block(3, 60, 3, 2, 1, 0.15, 5),  # 320x320 -> 160x160
-            self._make_single_conv_block(60, 120, 3, 2, 1, 0.15, 4),  # 160x160 -> 80x80
+            self._make_single_conv_block(3, 60, 3, 2, 1),  # 320x320 -> 160x160
+            self._make_single_conv_block_with_db(60, 120, 3, 2, 1, 0.15, 4),  # 160x160 -> 80x80
             # self._make_single_conv_block(24, 48, 3, 2, 1),  # 80x80 -> 40x40
             # self._make_single_conv_block(48, 48, 3, 2, 1),  # 40x40 -> 20x20
             # self._make_single_conv_block(48, 96, 3, 2, 1),  # 20x20 -> 10x10
@@ -50,7 +50,14 @@ class UpsampleConcatBackbone(nn.Module):
             )
             prev_channels = concat_ch // 2
 
-    def _make_single_conv_block(self, in_ch, out_ch, ks, strd, pdd, bp, bs):
+    def _make_single_conv_block(self, in_ch, out_ch, ks, strd, pdd):
+        return nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
+            RMSNorm(out_ch),
+            nn.SiLU()
+        )
+
+    def _make_single_conv_block_with_db(self, in_ch, out_ch, ks, strd, pdd, bp, bs):
         return nn.Sequential(
             nn.Conv2d(in_ch, out_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
             RMSNorm(out_ch),
