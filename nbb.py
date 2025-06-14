@@ -19,24 +19,25 @@ class UpsampleConcatBackbone(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.blocks = nn.ModuleList([
-            self._make_single_conv_block(3, 24, 3, 2, 1),  # 320x320 -> 160x160
-            self._make_single_conv_block(24, 24, 3, 2, 1),  # 160x160 -> 80x80
-            self._make_single_conv_block(24, 48, 3, 2, 1),  # 80x80 -> 40x40
-            self._make_single_conv_block(48, 48, 3, 2, 1),  # 40x40 -> 20x20
-            self._make_single_conv_block(48, 96, 3, 2, 1),  # 20x20 -> 10x10
-            self._make_single_conv_block(96, 96, 3, 2, 1),  # 10x10 -> 5x5
-            self._make_single_conv_block(96, 192, 3, 2, 1),  # 5x5 -> 3x3
-            self._make_single_conv_block(192, 192, 3, 1, 0),  # 3x3 -> 1x1
+        # todo 레이어 깊고 채널 적게, 레이어 얕고 채널 많게
+        self.feature_blocks = nn.ModuleList([
+            self._make_single_conv_block(3, 30, 3, 2, 1),  # 320x320 -> 160x160
+            self._make_single_conv_block(30, 60, 3, 2, 1),  # 160x160 -> 80x80
+            # self._make_single_conv_block(24, 48, 3, 2, 1),  # 80x80 -> 40x40
+            # self._make_single_conv_block(48, 48, 3, 2, 1),  # 40x40 -> 20x20
+            # self._make_single_conv_block(48, 96, 3, 2, 1),  # 20x20 -> 10x10
+            # self._make_single_conv_block(96, 96, 3, 2, 1),  # 10x10 -> 5x5
+            # self._make_single_conv_block(96, 192, 3, 2, 1),  # 5x5 -> 3x3
+            # self._make_single_conv_block(192, 192, 3, 1, 0),  # 3x3 -> 1x1
         ])
 
         self.reduces = nn.ModuleList()
 
         # 초기 out_channels: 첫 block 출력 채널 수
-        prev_channels = self.blocks[0][0].out_channels
+        prev_channels = self.feature_blocks[0][0].out_channels
 
         # reduce layer는 두 번째 block부터 필요하므로 blocks[1:] 기준으로 생성
-        for block in self.blocks[1:]:
+        for block in self.feature_blocks[1:]:
             block_out_ch = block[0].out_channels
             concat_ch = prev_channels + block_out_ch
             self.reduces.append(
@@ -55,23 +56,11 @@ class UpsampleConcatBackbone(nn.Module):
             nn.SiLU()
         )
 
-    def _make_depthwise_separable_conv_block(self, in_ch, out_ch, ks, strd, pdd):
-        return nn.Sequential(
-            # Depthwise convolution
-            nn.Conv2d(in_ch, in_ch, kernel_size=ks, stride=strd, padding=pdd, groups=in_ch, bias=False),
-            RMSNorm(in_ch),
-            nn.SiLU(),
-            # Pointwise convolution
-            nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=False),
-            RMSNorm(out_ch),
-            nn.SiLU()
-        )
-
     def forward(self, x):
         out = None
         target_h, target_w = None, None
 
-        for i, block in enumerate(self.blocks):
+        for i, block in enumerate(self.feature_blocks):
             x = block(x)
 
             if out is None:
@@ -92,20 +81,39 @@ class UpsampleConcatClassifier(nn.Module):
         super().__init__()
         self.backbone = UpsampleConcatBackbone()
 
-        # 임의의 입력으로 출력 채널 크기 추론 (예: 1x3x320x320)
+        dummy_input = torch.zeros(1, 3, 320, 320)  # (B, C, H, W)
         with torch.no_grad():
-            dummy_input = torch.randn(2, 3, 320, 320)
-            dummy_out = self.backbone(dummy_input)
-        self.output_channels = dummy_out.shape[1]
+            backbone_output = self.backbone(dummy_input)
+
+        _, backbone_output_ch, backbone_output_h, backbone_output_w = backbone_output.shape
+
+        backbone_output_size = backbone_output_h
+        global_conv_output_ch = num_classes
+
+        self.global_conv_block = nn.Sequential(
+            nn.Conv2d(
+                backbone_output_ch,
+                global_conv_output_ch,
+                kernel_size=backbone_output_size,
+                stride=1,
+                padding=0,
+                bias=False
+            ),
+            RMSNorm(global_conv_output_ch),
+            nn.SiLU()
+        )
 
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
-            nn.Linear(self.output_channels, num_classes)
+            nn.LayerNorm(global_conv_output_ch),  # optional
+            nn.Dropout(0.2),  # optional
+            nn.Linear(global_conv_output_ch, num_classes)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.backbone(x)
+        x = self.global_conv_block(x)
         x = self.classifier(x)
         return x
 
