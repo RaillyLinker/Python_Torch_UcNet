@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from dropblock import DropBlock2D
 
 
 class RMSNorm(nn.Module):
@@ -21,8 +22,8 @@ class UpsampleConcatBackbone(nn.Module):
 
         # todo 레이어 깊고 채널 적게, 레이어 얕고 채널 많게
         self.feature_blocks = nn.ModuleList([
-            self._make_single_conv_block(3, 30, 3, 2, 1),  # 320x320 -> 160x160
-            self._make_single_conv_block(30, 60, 3, 2, 1),  # 160x160 -> 80x80
+            self._make_single_conv_block(3, 60, 3, 2, 1, 0.15, 5),  # 320x320 -> 160x160
+            self._make_single_conv_block(60, 120, 3, 2, 1, 0.15, 4),  # 160x160 -> 80x80
             # self._make_single_conv_block(24, 48, 3, 2, 1),  # 80x80 -> 40x40
             # self._make_single_conv_block(48, 48, 3, 2, 1),  # 40x40 -> 20x20
             # self._make_single_conv_block(48, 96, 3, 2, 1),  # 20x20 -> 10x10
@@ -49,11 +50,12 @@ class UpsampleConcatBackbone(nn.Module):
             )
             prev_channels = concat_ch // 2
 
-    def _make_single_conv_block(self, in_ch, out_ch, ks, strd, pdd):
+    def _make_single_conv_block(self, in_ch, out_ch, ks, strd, pdd, bp, bs):
         return nn.Sequential(
             nn.Conv2d(in_ch, out_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
             RMSNorm(out_ch),
-            nn.SiLU()
+            nn.SiLU(),
+            DropBlock2D(drop_prob=bp, block_size=bs)
         )
 
     def forward(self, x):
@@ -87,33 +89,24 @@ class UpsampleConcatClassifier(nn.Module):
 
         _, backbone_output_ch, backbone_output_h, backbone_output_w = backbone_output.shape
 
-        backbone_output_size = backbone_output_h
-        global_conv_output_ch = num_classes
-
-        self.global_conv_block = nn.Sequential(
-            nn.Conv2d(
-                backbone_output_ch,
-                global_conv_output_ch,
-                kernel_size=backbone_output_size,
-                stride=1,
-                padding=0,
-                bias=False
-            ),
-            RMSNorm(global_conv_output_ch),
-            nn.SiLU()
-        )
+        hidden_dim = num_classes * 10
 
         self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Flatten(),
-            nn.LayerNorm(global_conv_output_ch),  # optional
-            nn.Dropout(0.2),  # optional
-            nn.Linear(global_conv_output_ch, num_classes)
+            nn.AdaptiveAvgPool2d((1, 1)),  # (B, C, 1, 1)
+            nn.Flatten(),  # (B, C)
+            nn.LayerNorm(backbone_output_ch),
+            nn.Dropout(0.3),
+
+            nn.Linear(backbone_output_ch, hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim),
+            nn.Dropout(0.3),
+
+            nn.Linear(hidden_dim, num_classes)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.backbone(x)
-        x = self.global_conv_block(x)
         x = self.classifier(x)
         return x
 
