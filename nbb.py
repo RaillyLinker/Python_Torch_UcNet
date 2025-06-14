@@ -51,7 +51,7 @@ class UpsampleConcatBackbone(nn.Module):
     def _make_single_conv_block(self, in_ch, out_ch, ks, strd, pdd):
         return nn.Sequential(
             nn.Conv2d(in_ch, out_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
-            nn.BatchNorm2d(out_ch),
+            RMSNorm(out_ch),
             nn.SiLU()
         )
 
@@ -59,11 +59,11 @@ class UpsampleConcatBackbone(nn.Module):
         return nn.Sequential(
             # Depthwise convolution
             nn.Conv2d(in_ch, in_ch, kernel_size=ks, stride=strd, padding=pdd, groups=in_ch, bias=False),
-            nn.BatchNorm2d(in_ch),
+            RMSNorm(in_ch),
             nn.SiLU(),
             # Pointwise convolution
             nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=False),
-            nn.BatchNorm2d(out_ch),
+            RMSNorm(out_ch),
             nn.SiLU()
         )
 
