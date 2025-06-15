@@ -93,7 +93,7 @@ class UpsampleConcatClassifier(nn.Module):
         super().__init__()
         self.backbone = MultiscaleConcatNetwork()
 
-        dummy_input = torch.zeros(1, 3, 320, 320)  # (B, C, H, W)
+        dummy_input = torch.zeros(1, 3, 243, 243)  # (B, C, H, W)
         with torch.no_grad():
             backbone_output = self.backbone(dummy_input)
 
