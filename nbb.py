@@ -3,17 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(1, dim, 1, 1))
-        self.eps = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = x.pow(2).mean(dim=1, keepdim=True).add(self.eps).sqrt()
-        return (x / rms) * self.weight
-
-
 class UpsampleConcatBackbone(nn.Module):
     def __init__(self):
         super().__init__()
@@ -39,7 +28,7 @@ class UpsampleConcatBackbone(nn.Module):
             self.reduce_ch_half_list.append(
                 nn.Sequential(
                     nn.Conv2d(in_channels, half_ch, kernel_size=1, stride=1, padding=0, bias=False),
-                    RMSNorm(half_ch),
+                    nn.BatchNorm2d(half_ch),
                     nn.SiLU()
                 ),
             )
@@ -49,12 +38,12 @@ class UpsampleConcatBackbone(nn.Module):
         return nn.Sequential(
             # 평면당 형태를 파악
             nn.Conv2d(in_ch, mid_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
-            RMSNorm(mid_ch),
+            nn.BatchNorm2d(mid_ch),
             nn.SiLU(),
 
             # 픽셀당 패턴을 파악
             nn.Conv2d(mid_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=False),
-            RMSNorm(out_ch),
+            nn.BatchNorm2d(out_ch),
             nn.SiLU()
         )
 
@@ -90,11 +79,11 @@ class UpsampleConcatClassifier(nn.Module):
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
-            nn.RMSNorm(backbone_output_ch),
+            nn.BatchNorm2d(backbone_output_ch),
             nn.Dropout(0.3),
 
             nn.Linear(backbone_output_ch, hidden_dim),
-            nn.RMSNorm(hidden_dim),
+            nn.BatchNorm2d(hidden_dim),
             nn.SiLU(),
             nn.Dropout(0.3),
 
