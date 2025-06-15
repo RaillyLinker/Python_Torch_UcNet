@@ -7,8 +7,14 @@ from torch.utils.data import DataLoader
 from datasets import load_dataset
 from torchvision import transforms
 from tqdm import tqdm
+import glob
+from nbb import UpsampleConcatClassifier  # 사용자 정의 모델 import
 
-from nbb_depth import UpsampleConcatClassifier  # 사용자 정의 모델 import
+# -----------------------------------
+# 사전 학습된 모델 경로 (없으면 None)
+# -----------------------------------
+# PRETRAINED_MODEL_PATH = "checkpoints/best_model_epoch6.pth"  # 또는 None
+PRETRAINED_MODEL_PATH = None  # 또는 None
 
 if __name__ == "__main__":
     # ----------------------------
@@ -16,6 +22,7 @@ if __name__ == "__main__":
     # ----------------------------
     train_ds = load_dataset("food101", split="train")
     val_ds = load_dataset("food101", split="validation")
+
 
     def transform_example(example):
         from PIL import Image
@@ -33,6 +40,7 @@ if __name__ == "__main__":
         example["pixel_values"] = transform(image)
         return example
 
+
     train_ds = train_ds.map(transform_example, num_proc=1)
     val_ds = val_ds.map(transform_example, num_proc=1)
     train_ds.set_format(type='torch', columns=['pixel_values', 'label'])
@@ -46,8 +54,15 @@ if __name__ == "__main__":
     # ----------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UpsampleConcatClassifier(num_classes=101).to(device)
+
+    # ✅ 사전 학습된 모델 불러오기
+    if PRETRAINED_MODEL_PATH is not None and os.path.exists(PRETRAINED_MODEL_PATH):
+        model.load_state_dict(torch.load(PRETRAINED_MODEL_PATH, map_location=device))
+        print(f"✅ Loaded pretrained model from {PRETRAINED_MODEL_PATH}")
+
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
+
 
     # ----------------------------
     # 학습 및 평가 함수 정의
@@ -81,6 +96,7 @@ if __name__ == "__main__":
         accuracy = total_correct / total_samples
         return avg_loss, accuracy
 
+
     def eval_epoch(model, dataloader, criterion, device):
         model.eval()
         total_loss, total_correct, total_samples = 0, 0, 0
@@ -113,14 +129,13 @@ if __name__ == "__main__":
         accuracy = total_correct / total_samples
         return avg_loss, accuracy, inference_time, avg_inference_time
 
+
     # ----------------------------
     # 전체 학습 실행 + 모델 저장
     # ----------------------------
     os.makedirs("checkpoints", exist_ok=True)
     best_val_acc = 0.0
     epoch = 0
-    train_acc_drop_count = 0
-    val_lower_than_train_count = 0
     prev_train_acc = 0.0
     prev_val_acc = 0.0
 
@@ -135,42 +150,30 @@ if __name__ == "__main__":
               f"Inference Time: {val_time:.2f}s | Avg Per Image: {avg_inf_time * 1000:.2f}ms")
 
         # ✅ 에포크별 모델 저장
-        if epoch % 5 == 0:
-            torch.save(model.state_dict(), f"checkpoints/model_epoch{epoch}.pth")
+        if epoch % 2 == 0:
+            new_path = (
+                f"checkpoints/epoch{epoch}_"
+                f"train{train_acc * 100:.2f}_val{val_acc * 100:.2f}.pth"
+            )
+            torch.save(model.state_dict(), new_path)
 
         # ✅ 최고 성능 모델 저장
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_epoch = epoch
-            torch.save(model.state_dict(), f"checkpoints/best_model_epoch{epoch}.pth")
-            print("💾 Saved best model.")
 
-        # 종료 조건: val_acc < train_acc
-        if val_acc < train_acc:
-            val_lower_than_train_count += 1
-        else:
-            val_lower_than_train_count = 0
+            # 기존 best 모델 삭제
+            for f in glob.glob("checkpoints/best_*.pth"):
+                os.remove(f)
 
-        # 종료 조건: train_acc < 이전
-        if train_acc <= prev_train_acc:
-            train_acc_drop_count += 1
-        else:
-            train_acc_drop_count = 0
+            # 새 파일명 생성
+            new_best_path = (
+                f"checkpoints/best_epoch{epoch}_"
+                f"train{train_acc * 100:.2f}_val{val_acc * 100:.2f}.pth"
+            )
 
-        # 종료 조건: train, val 모두 이전보다 낮음
-        if train_acc < prev_train_acc and val_acc < prev_val_acc:
-            print("🛑 Stop training: both training and validation accuracy dropped compared to previous epoch.")
-            break
-
-        # 종료 조건: val_acc < train_acc 3회 연속
-        if val_lower_than_train_count >= 3:
-            print("🛑 Stop training: validation accuracy lower than training accuracy for 3 consecutive epochs.")
-            break
-
-        # 종료 조건: train_acc 감소 3회 연속
-        if train_acc_drop_count >= 3:
-            print("🛑 Stop training: training accuracy dropped for 3 consecutive epochs.")
-            break
+            torch.save(model.state_dict(), new_best_path)
+            print(f"💾 Saved best model as {os.path.basename(new_best_path)}.")
 
         # 상태 갱신
         prev_train_acc = train_acc
