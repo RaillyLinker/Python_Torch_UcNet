@@ -8,7 +8,7 @@ from datasets import load_dataset
 from torchvision import transforms
 from tqdm import tqdm
 
-from nbb import UpsampleConcatClassifier  # 사용자 정의 모델 import
+from nbb_depth import UpsampleConcatClassifier  # 사용자 정의 모델 import
 
 if __name__ == "__main__":
     # ----------------------------
@@ -25,7 +25,7 @@ if __name__ == "__main__":
             return None
 
         transform = transforms.Compose([
-            transforms.Resize((320, 320)),
+            transforms.Resize((243, 243)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                  std=[0.229, 0.224, 0.225]),
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UpsampleConcatClassifier(num_classes=101).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
 
     # ----------------------------
     # 학습 및 평가 함수 정의
