@@ -60,30 +60,62 @@ class MultiscaleConcatNetwork(nn.Module):
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+# class UpsampleConcatClassifier(nn.Module):
+#     def __init__(self, num_classes: int):
+#         super().__init__()
+#         self.backbone = MultiscaleConcatNetwork()
+#
+#         dummy_input = torch.zeros(1, 3, 243, 243)
+#         with torch.no_grad():
+#             backbone_output = self.backbone(dummy_input)
+#
+#         _, backbone_output_ch, backbone_output_h, backbone_output_w = backbone_output.shape
+#
+#         self.conv1x1 = nn.Conv2d(
+#             in_channels=backbone_output_ch,
+#             out_channels=num_classes,
+#             kernel_size=1,
+#             stride=1,
+#             padding=0
+#         )
+#
+#         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+#
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         x = self.backbone(x)
+#         x = self.conv1x1(x)
+#         x = self.global_pool(x)
+#         x = x.view(x.size(0), -1)
+#         return x
+
 class UpsampleConcatClassifier(nn.Module):
     def __init__(self, num_classes: int):
         super().__init__()
         self.backbone = MultiscaleConcatNetwork()
 
-        dummy_input = torch.zeros(1, 3, 243, 243)
+        dummy_input = torch.zeros(1, 3, 320, 320)  # (B, C, H, W)
         with torch.no_grad():
             backbone_output = self.backbone(dummy_input)
 
         _, backbone_output_ch, backbone_output_h, backbone_output_w = backbone_output.shape
 
-        self.conv1x1 = nn.Conv2d(
-            in_channels=backbone_output_ch,
-            out_channels=num_classes,
-            kernel_size=1,
-            stride=1,
-            padding=0
-        )
+        hidden_dim = num_classes * 10
 
-        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),  # (B, C, 1, 1)
+            nn.Flatten(),  # (B, C)
+            nn.RMSNorm(backbone_output_ch),
+            nn.Dropout(0.3),
+
+            nn.Linear(backbone_output_ch, hidden_dim),
+            nn.RMSNorm(hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(0.3),
+
+            nn.Linear(hidden_dim, num_classes)
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.backbone(x)
-        x = self.conv1x1(x)
-        x = self.global_pool(x)
-        x = x.view(x.size(0), -1)
+        x = self.classifier(x)
         return x

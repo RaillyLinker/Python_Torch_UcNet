@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dropblock import DropBlock2D
 
 
 class RMSNorm(nn.Module):
@@ -23,7 +22,7 @@ class UpsampleConcatBackbone(nn.Module):
         # todo 레이어 깊고 채널 적게, 레이어 얕고 채널 많게
         self.feature_blocks = nn.ModuleList([
             self._make_single_conv_block(3, 60, 3, 2, 1),  # 320x320 -> 160x160
-            self._make_single_conv_block_with_db(60, 120, 3, 2, 1, 0.15, 4),  # 160x160 -> 80x80
+            self._make_single_conv_block(60, 120, 3, 2, 1),  # 160x160 -> 80x80
             # self._make_single_conv_block(24, 48, 3, 2, 1),  # 80x80 -> 40x40
             # self._make_single_conv_block(48, 48, 3, 2, 1),  # 40x40 -> 20x20
             # self._make_single_conv_block(48, 96, 3, 2, 1),  # 20x20 -> 10x10
@@ -55,14 +54,6 @@ class UpsampleConcatBackbone(nn.Module):
             nn.Conv2d(in_ch, out_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
             RMSNorm(out_ch),
             nn.SiLU()
-        )
-
-    def _make_single_conv_block_with_db(self, in_ch, out_ch, ks, strd, pdd, bp, bs):
-        return nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
-            RMSNorm(out_ch),
-            nn.SiLU(),
-            DropBlock2D(drop_prob=bp, block_size=bs)
         )
 
     def forward(self, x):
@@ -101,12 +92,12 @@ class UpsampleConcatClassifier(nn.Module):
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)),  # (B, C, 1, 1)
             nn.Flatten(),  # (B, C)
-            nn.LayerNorm(backbone_output_ch),
+            nn.RMSNorm(backbone_output_ch),
             nn.Dropout(0.3),
 
             nn.Linear(backbone_output_ch, hidden_dim),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim),
+            nn.RMSNorm(hidden_dim),
+            nn.SiLU(),
             nn.Dropout(0.3),
 
             nn.Linear(hidden_dim, num_classes)
@@ -116,40 +107,3 @@ class UpsampleConcatClassifier(nn.Module):
         x = self.backbone(x)
         x = self.classifier(x)
         return x
-
-# import timm  # EfficientNetV2-S 포함 다양한 pretrained 모델 제공
-#
-#
-# class ConvNeXtV2Backbone(nn.Module):
-#     def __init__(self, model_name: str = "convnextv2_tiny"):
-#         super().__init__()
-#         # pretrained ConvNeXtV2, classifier 제외
-#         self.model = timm.create_model(model_name, pretrained=False, features_only=True)
-#         # features_only=True: FC layer 제외하고 feature map만 반환
-#
-#     def forward(self, x):
-#         features = self.model(x)  # list of feature maps (보통 4~5개 계층 출력됨)
-#         return features[-1]  # 마지막 feature map 사용 (B, C, H, W)
-#
-#
-# class UpsampleConcatClassifier(nn.Module):
-#     def __init__(self, num_classes: int):
-#         super().__init__()
-#         self.backbone = ConvNeXtV2Backbone()
-#
-#         # output 채널 수 자동 추출
-#         with torch.no_grad():
-#             dummy_input = torch.randn(1, 3, 320, 320)
-#             dummy_out = self.backbone(dummy_input)
-#         self.output_channels = dummy_out.shape[1]
-#
-#         self.classifier = nn.Sequential(
-#             nn.AdaptiveAvgPool2d((1, 1)),
-#             nn.Flatten(),
-#             nn.Linear(self.output_channels, num_classes)
-#         )
-#
-#     def forward(self, x):
-#         x = self.backbone(x)
-#         x = self.classifier(x)
-#         return x
