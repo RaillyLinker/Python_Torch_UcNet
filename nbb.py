@@ -18,17 +18,24 @@ class UpsampleConcatBackbone(nn.Module):
     def __init__(self):
         super().__init__()
 
+        # todo : 처음 빼고 다 depthwise 로 해보기
         self.feature_blocks = nn.ModuleList([
-            self._make_single_conv_block(1, 20, 3, 3, 0),  # 243x243 -> 81x81
-            self._make_single_conv_block(20, 40, 3, 3, 0),  # 81x81 -> 27x27
-            self._make_single_conv_block(40, 80, 3, 3, 0),  # 27x27 -> 9x9
-            self._make_single_conv_block(80, 160, 3, 3, 0),  # 9x9 -> 3x3
-            self._make_single_conv_block(160, 320, 3, 1, 0),  # 3x3 -> 1x1
+            self._make_single_conv_block(1, 40, 20, 3, 3, 0),  # 243x243 -> 81x81
+            self._make_single_conv_block(20, 80, 40, 3, 3, 0),  # 81x81 -> 27x27
+            self._make_single_conv_block(40, 160, 80, 3, 3, 0),  # 27x27 -> 9x9
+            self._make_single_conv_block(80, 320, 160, 3, 3, 0),  # 9x9 -> 3x3
+            self._make_single_conv_block(160, 640, 320, 3, 1, 0),  # 3x3 -> 1x1
         ])
 
-    def _make_single_conv_block(self, in_ch, out_ch, ks, strd, pdd):
+    def _make_single_conv_block(self, in_ch, mid_ch, out_ch, ks, strd, pdd):
         return nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
+            # 커널로 형태 비교
+            nn.Conv2d(in_ch, mid_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
+            RMSNorm(mid_ch),
+            nn.SiLU(),
+
+            # 커널 단위로 추출된 채널 벡터의 조합으로 고유값 반환(차원 밀도 높이기)
+            nn.Conv2d(mid_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=False),
             RMSNorm(out_ch),
             nn.SiLU()
         )
@@ -46,10 +53,7 @@ class UpsampleConcatBackbone(nn.Module):
             f = F.interpolate(x, size=(target_h, target_w), mode='nearest')
             feat_list.append(f)
 
-        out = torch.cat(
-            feat_list,
-            dim=1
-        )
+        out = torch.cat(feat_list, dim=1)
 
         return out
 
@@ -60,7 +64,7 @@ class UpsampleConcatClassifier(nn.Module):
         super().__init__()
         self.backbone = UpsampleConcatBackbone()
 
-        dummy_input = torch.zeros(1, 3, 243, 243)  # (B, C, H, W)
+        dummy_input = torch.zeros(1, 3, 243, 243)
         with torch.no_grad():
             backbone_output = self.backbone(dummy_input)
 
@@ -69,8 +73,8 @@ class UpsampleConcatClassifier(nn.Module):
         hidden_dim = num_classes * 10
 
         self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, 1)),  # (B, C, 1, 1)
-            nn.Flatten(),  # (B, C)
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
             nn.RMSNorm(backbone_output_ch),
             nn.Dropout(0.3),
 
