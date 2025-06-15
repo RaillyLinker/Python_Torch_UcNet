@@ -20,11 +20,14 @@ class UpsampleConcatBackbone(nn.Module):
         img_ch = 3
 
         self.feature_blocks = nn.ModuleList([
-            self._make_single_conv_block(1, 512, 16, 3, 2, 1),  # 224x224 -> 112x112
-            self._make_single_conv_block(16, 512, 32, 3, 2, 1),  # 112x112 -> 56x56
-            self._make_single_conv_block(32, 512, 64, 3, 2, 1),  # 56x56 -> 28x28
-            self._make_single_conv_block(64, 512, 128, 3, 2, 1),  # 28x28 -> 14x14
-            self._make_single_conv_block(128, 512, 256, 3, 2, 1),  # 14x14 -> 7x7
+            self._make_single_conv_block(1, 512, 8, 3, 2, 1),  # 320x320 -> 160x160
+            self._make_single_conv_block(8, 512, 16, 3, 2, 1),  # 160x160 -> 80x80
+            self._make_single_conv_block(16, 512, 32, 3, 2, 1),  # 80x80 -> 40x40
+            self._make_single_conv_block(32, 512, 64, 3, 2, 1),  # 40x40 -> 20x20
+            self._make_single_conv_block(64, 512, 128, 3, 2, 1),  # 20x20 -> 10x10
+            self._make_single_conv_block(128, 512, 256, 3, 2, 1),  # 10x10 -> 5x5
+            self._make_single_conv_block(256, 512, 512, 3, 2, 1),  # 5x5 -> 3x3
+            self._make_single_conv_block(512, 512, 1024, 3, 1, 0),  # 3x3 -> 1x1
         ])
 
         self.reduce_ch_half_list = nn.ModuleList()
@@ -34,16 +37,22 @@ class UpsampleConcatBackbone(nn.Module):
             in_channels = in_channels + out_ch
             half_ch = in_channels // 2
             self.reduce_ch_half_list.append(
-                nn.Conv2d(in_channels, half_ch, kernel_size=1, stride=1, padding=0, bias=False)
+                nn.Sequential(
+                    nn.Conv2d(in_channels, half_ch, kernel_size=1, stride=1, padding=0, bias=False),
+                    RMSNorm(half_ch),
+                    nn.SiLU()
+                ),
             )
             in_channels = half_ch
 
     def _make_single_conv_block(self, in_ch, mid_ch, out_ch, ks, strd, pdd):
         return nn.Sequential(
+            # 평면당 형태를 파악
             nn.Conv2d(in_ch, mid_ch, kernel_size=ks, stride=strd, padding=pdd, bias=False),
             RMSNorm(mid_ch),
             nn.SiLU(),
 
+            # 픽셀당 패턴을 파악
             nn.Conv2d(mid_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=False),
             RMSNorm(out_ch),
             nn.SiLU()
@@ -70,7 +79,7 @@ class UpsampleConcatClassifier(nn.Module):
         super().__init__()
         self.backbone = UpsampleConcatBackbone()
 
-        dummy_input = torch.zeros(1, 3, 224, 224)
+        dummy_input = torch.zeros(1, 3, 320, 320)
         with torch.no_grad():
             backbone_output = self.backbone(dummy_input)
 
